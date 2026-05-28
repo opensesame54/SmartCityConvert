@@ -1,6 +1,6 @@
 # Smart City Incident Reporting System
 
-A web application for civic incident management. Citizens report infrastructure problems, the system routes them to the responsible municipal department, workers resolve them, and administrators oversee the entire pipeline. The application supports real-time status updates over WebSocket and automatic escalation of overdue incidents via a background scheduler.
+A MERN-based civic incident management platform. Citizens report infrastructure problems, the system routes them to the responsible municipal department, workers resolve them, and administrators oversee the entire pipeline. The application supports real-time status updates over Socket.IO and automatic escalation of overdue incidents via a background queue.
 
 **Live deployment:** https://smartcity-vxqp.onrender.com
 
@@ -21,7 +21,7 @@ A web application for civic incident management. Citizens report infrastructure 
 - [Deployment](#deployment)
 - [Local Development Setup](#local-development-setup)
 - [Environment Variables](#environment-variables)
-- [Database Migrations](#database-migrations)
+- [Data Seeding and Migration](#data-seeding-and-migration)
 
 ---
 
@@ -30,73 +30,52 @@ A web application for civic incident management. Citizens report infrastructure 
 ```
                         ┌─────────────────────────────────────┐
                         │            Browser Client            │
-                        │   HTTP requests + WebSocket (wss)    │
+                        │   React UI + Axios + Socket.IO       │
                         └────────────┬──────────┬─────────────┘
                                      │          │
-                            HTTP     │          │  WebSocket
+                            HTTP     │          │  Socket.IO
                                      │          │
                         ┌────────────▼──────────▼─────────────┐
-                        │         Render (ASGI / Daphne)       │
-                        │                                      │
-                        │  ┌──────────────────────────────┐   │
-                        │  │       Django Application      │   │
-                        │  │                              │   │
-                        │  │  ProtocolTypeRouter          │   │
-                        │  │  ├── HTTP → Django Views     │   │
-                        │  │  └── WS   → Channels         │   │
-                        │  │             Consumers         │   │
-                        │  └──────────────────────────────┘   │
-                        └───────────┬──────────────┬──────────┘
-                                    │              │
-                    ┌───────────────▼──┐    ┌──────▼───────────────┐
-                    │  Supabase (PG)   │    │    Redis             │
-                    │  PostgreSQL DB   │    │    Channel Layer      │
-                    │  (SSL required)  │    │    (pub/sub)          │
-                    └──────────────────┘    └──────────────────────┘
+                        │        Node.js / Express API         │
+                        │     REST + JWT auth + uploads        │
+                        └────────────┬──────────┬─────────────┘
+                                     │          │
+                               MongoDB          │   Redis
+                                     │          │
+                        ┌────────────▼──┐   ┌───▼─────────────┐
+                        │  Mongo Atlas  │   │ Socket.IO + Bull │
+                        │   (Mongoose)  │   │  (pub/sub, jobs) │
+                        └───────────────┘   └─────────────────┘
 ```
 
 ```
 Real-Time Broadcast Flow
 ─────────────────────────
 
-  Worker / Scheduler
+  Admin / Worker updates status
        │
-       │ HTTP POST or management command
        ▼
-  StatusUpdate.save()
+  Express controller updates Incident
        │
-       │ Django post_save signal
        ▼
-  broadcast_status_update()
+  Socket.IO emit: incident.update
        │
-       │ async_to_sync → channel_layer.group_send
        ▼
-     Redis ──► group: 'incidents_live'
-                    │
-          ┌─────────┼─────────┐
-          ▼         ▼         ▼
-      Browser1  Browser2  Browser3
-      (toast)   (toast)   (toast)
+     Redis adapter → all connected browsers
 ```
 
 ```
 Auto-Escalation Flow
 ─────────────────────
 
-  APScheduler (background thread, every 1 hour)
+  Bull queue (repeatable job)
        │
        ▼
-  escalate_incidents management command
+  escalationQueue processor
        │
        ├── Query: deadline < now, status NOT IN [RESOLVED, ESCALATED]
-       │
-       ├── For each overdue incident:
-       │      status   → ESCALATED
-       │      priority → EMERGENCY
-       │      save()
-       │      StatusUpdate.create(updated_by=None)
-       │
-       └── post_save signal fires → Redis → WebSocket push to all browsers
+       ├── Update status → ESCALATED, priority → EMERGENCY
+       └── Socket.IO broadcast to browsers
 ```
 
 ---
@@ -105,259 +84,162 @@ Auto-Escalation Flow
 
 | Layer | Technology | Purpose |
 |---|---|---|
-| Web Framework | Django 4.2+ | HTTP request handling, ORM, admin, auth |
-| ASGI Server | Daphne (via `channels[daphne]`) | Serves both HTTP and WebSocket connections |
-| WebSocket | Django Channels | Async consumer-based WebSocket handling |
-| Channel Layer | channels-redis + Redis | Pub/sub broker for cross-process WebSocket broadcast |
-| Database | PostgreSQL (Supabase) | Primary data store, SSL enforced |
-| ORM Driver | psycopg2-binary | PostgreSQL adapter for Django |
-| Scheduler | APScheduler + django-apscheduler | Background interval job for auto-escalation |
-| Static Files | WhiteNoise | Compressed static file serving without a separate web server |
-| Image Handling | Pillow | Incident photo upload and storage |
-| Environment | python-dotenv | `.env` file loading for local development |
-| Frontend Maps | Leaflet.js + OpenStreetMap | Interactive map for incident geolocation |
-| Frontend Charts | Chart.js | Analytics visualisations (bar, pie, line, heatmap) |
-| CSS Framework | Bootstrap 5 | Responsive UI components |
-| Deployment | Render | Cloud platform with HTTPS, environment variable management |
+| Frontend | React (CRA) | SPA UI, routing, state management |
+| API | Node.js + Express | REST endpoints, JWT auth, file uploads |
+| Database | MongoDB Atlas | Primary data store |
+| ODM | Mongoose | Schema modeling and validation |
+| Real-Time | Socket.IO + Redis adapter | Live status updates across instances |
+| Queue | Bull + Redis | Escalation jobs and async tasks |
+| Maps | Leaflet + OpenStreetMap | Interactive incident maps |
+| Charts | Chart.js | Analytics dashboards |
+| UI | Bootstrap 5 | Layout and components |
+| Deployment | Render | Web hosting and environment management |
 
 ---
 
 ## Project Structure
 
 ```
-SmartCityGit/
-├── manage.py
-├── requirements.txt
-├── .env                        # local secrets (not committed)
+SmartCityConvert/
+├── README.md
+├── .gitignore
+├── client/                     # React app
+│   ├── public/
+│   ├── src/
+│   │   ├── api/
+│   │   ├── components/
+│   │   ├── context/
+│   │   ├── hooks/
+│   │   ├── pages/
+│   │   └── styles/
+│   └── package.json
 │
-├── smartcity/                  # project configuration
-│   ├── settings.py
-│   ├── urls.py
-│   ├── asgi.py                 # ASGI entry point (HTTP + WebSocket routing)
-│   └── wsgi.py
-│
-├── accounts/                   # user authentication and profile management
-│   ├── models.py               # custom User model (extends AbstractUser)
-│   ├── views.py
-│   ├── forms.py
-│   ├── urls.py
-│   ├── admin.py
-│   └── migrations/
-│
-├── incidents/                  # core incident logic
-│   ├── models.py               # Department, Incident, StatusUpdate
-│   ├── views.py                # report, detail, my_incidents, JSON APIs
-│   ├── forms.py
-│   ├── urls.py
-│   ├── admin.py
-│   ├── consumers.py            # WebSocket consumer
-│   ├── routing.py              # WebSocket URL patterns
-│   ├── signals.py              # post_save broadcast trigger
-│   ├── scheduler.py            # APScheduler setup
-│   ├── apps.py                 # scheduler startup guard
-│   ├── migrations/
-│   └── management/
-│       └── commands/
-│           ├── setup_departments.py
-│           └── escalate_incidents.py
-│
-├── dashboard/                  # views for public, admin, worker, analytics
-│   ├── views.py
-│   ├── urls.py
-│   └── migrations/
-│
-├── templates/
-│   ├── base.html
-│   ├── accounts/
-│   │   ├── login.html
-│   │   ├── register.html
-│   │   └── profile.html
-│   ├── incidents/
-│   │   ├── report.html
-│   │   ├── detail.html
-│   │   └── my_incidents.html
-│   └── dashboard/
-│       ├── public.html
-│       ├── admin_panel.html
-│       ├── worker_panel.html
-│       └── analytics.html
-│
-└── static/
-    ├── css/
-    │   └── main.css
-    └── js/
-        ├── map.js              # Leaflet map interaction and geolocation
-        ├── charts.js           # Chart.js rendering for analytics
-        └── websocket.js        # WebSocket client with auto-reconnect
+└── server/                     # Express API
+    ├── src/
+    │   ├── config/
+    │   ├── controllers/
+    │   ├── jobs/
+    │   ├── middleware/
+    │   ├── models/
+    │   ├── routes/
+    │   ├── scripts/
+    │   ├── services/
+    │   ├── socket/
+    │   └── app.js
+    ├── .env
+    └── package.json
 ```
 
 ---
 
 ## Application Modules
 
-### `smartcity/` — Project Configuration
+### `client/` — React UI
 
-**`settings.py`** manages all configuration through environment variables. Notable decisions:
+- `src/pages/Dashboard.js` renders the live incident map and sidebar filters.
+- `src/pages/AdminPanel.js` provides a kanban board with drag-and-drop status updates.
+- `src/pages/WorkerPanel.js` focuses on assigned incidents for workers.
+- `src/pages/Analytics.js` renders charts and a heatmap using `react-leaflet` and Chart.js.
+- `src/context/AuthContext.js` manages JWT auth state in local storage.
+- `src/api/client.js` is the Axios client with JWT injection.
 
-- The Redis channel layer connection is tested at startup with a `ping()`. If Redis is unavailable, the application falls back to `InMemoryChannelLayer` automatically — WebSocket broadcasts work within a single process but not across multiple workers.
-- `SECURE_PROXY_SSL_HEADER` is set to `("HTTP_X_FORWARDED_PROTO", "https")` because Render places a reverse proxy in front of the application. Without this, Django would not detect HTTPS correctly and would reject secure cookie assertions.
-- `CSRF_COOKIE_SECURE` and `SESSION_COOKIE_SECURE` are enabled only when `DEBUG=False`, so local development does not require HTTPS.
+### `server/` — Express API
 
-**`asgi.py`** uses `ProtocolTypeRouter` to split traffic by protocol. HTTP traffic is handled by the standard Django ASGI application. WebSocket connections are routed through `AuthMiddlewareStack`, which populates `scope['user']` from the Django session, then dispatched to `IncidentConsumer` via the URL patterns in `incidents/routing.py`.
-
----
-
-### `accounts/` — Authentication
-
-Extends Django's `AbstractUser` with three additional fields:
-
-| Field | Type | Notes |
-|---|---|---|
-| `role` | CharField | `citizen`, `admin`, or `worker`. Default: `citizen` |
-| `phone` | CharField | Optional contact number |
-| `department` | ForeignKey | Links workers to their assigned department. Null for citizens and admins |
-
-Helper methods `is_citizen()`, `is_admin_user()`, and `is_worker()` are used throughout views to control access without hardcoding role string comparisons each time.
-
----
-
-### `incidents/` — Core Logic
-
-The primary application module. Contains all domain models, the WebSocket consumer, the signal broadcaster, the background scheduler, and the management commands.
-
----
-
-### `dashboard/` — Views Layer
-
-Contains no models. All views query the `incidents` app models directly. Separated from `incidents` to keep the incident module focused on business logic and keep presentation concerns isolated.
+- `src/controllers/` contains feature controllers for auth, incidents, analytics, and departments.
+- `src/routes/` defines REST routes and connects them to controllers.
+- `src/socket/` sets up Socket.IO and Redis adapter for multi-instance broadcasts.
+- `src/jobs/escalationQueue.js` defines the escalation processor and schedule.
+- `src/services/incidentService.js` contains shared routing and deadline helpers.
+- `src/scripts/` contains one-off scripts for seeding and data migration.
 
 ---
 
 ## Database Schema
 
+MongoDB collections are modeled with Mongoose in `server/src/models`.
+
 ```
-accounts_user
+users
 ─────────────────────────────────────────────────
-id              BigAutoField  PK
-username        VARCHAR(150)  unique
-email           VARCHAR(254)
-password        VARCHAR(128)
-first_name      VARCHAR(150)
-last_name       VARCHAR(150)
-role            VARCHAR(10)   citizen | admin | worker
-phone           VARCHAR(15)
-department_id   FK → incidents_department (nullable)
-is_staff        BOOLEAN
-is_active       BOOLEAN
-date_joined     TIMESTAMPTZ
-last_login      TIMESTAMPTZ
+_id            ObjectId
+username       String
+email          String
+passwordHash   String
+role           citizen | admin | worker
+department     ObjectId (ref: departments)
+createdAt      Date
+updatedAt      Date
 
-
-incidents_department
+departments
 ─────────────────────────────────────────────────
-id              BigAutoField  PK
-name            VARCHAR(100)
-code            VARCHAR(50)   unique  (PUBLIC_WORKS | SANITATION | ELECTRICITY | WATER | TRAFFIC)
-email           VARCHAR(254)
-phone           VARCHAR(15)
-description     TEXT
+_id            ObjectId
+name           String
+code           PUBLIC_WORKS | SANITATION | ELECTRICITY | WATER | TRAFFIC
+email          String
+phone          String
+description    String
 
-
-incidents_incident
+incidents
 ─────────────────────────────────────────────────
-id              BigAutoField  PK
-tracking_id     VARCHAR(20)   unique  (INC-XXXXXXXX, auto-generated)
-title           VARCHAR(200)
-description     TEXT
-incident_type   VARCHAR(20)   POTHOLE | GARBAGE | STREETLIGHT | WATER_LEAK | TRAFFIC | MISC
-status          VARCHAR(20)   SUBMITTED | ASSIGNED | IN_PROGRESS | RESOLVED | ESCALATED
-priority        VARCHAR(10)   LOW | MEDIUM | HIGH | EMERGENCY
-latitude        DECIMAL(9,6)
-longitude       DECIMAL(9,6)
-address         VARCHAR(255)
-area            VARCHAR(100)
-image           ImageField    uploads to media/incidents/
-reported_by_id  FK → accounts_user
-assigned_to_id  FK → accounts_user (nullable)
-department_id   FK → incidents_department (nullable)
-created_at      TIMESTAMPTZ   auto_now_add
-updated_at      TIMESTAMPTZ   auto_now
-resolved_at     TIMESTAMPTZ   nullable, set when status → RESOLVED
-deadline        TIMESTAMPTZ   auto-calculated from priority on save
+_id            ObjectId
+trackingId     String (INC-XXXXXXXX)
+title          String
+description    String
+incidentType   POTHOLE | GARBAGE | STREETLIGHT | WATER_LEAK | TRAFFIC | MISC
+status         SUBMITTED | ASSIGNED | IN_PROGRESS | RESOLVED | ESCALATED
+priority       LOW | MEDIUM | HIGH | EMERGENCY
+latitude       Number
+longitude      Number
+address        String
+area           String
+imageUrl       String
+reportedBy     ObjectId (ref: users)
+assignedTo     ObjectId (ref: users)
+department     ObjectId (ref: departments)
+deadline       Date
+resolvedAt     Date
+createdAt      Date
+updatedAt      Date
 
-
-incidents_statusupdate
+status_updates
 ─────────────────────────────────────────────────
-id              BigAutoField  PK
-incident_id     FK → incidents_incident
-status          VARCHAR(20)
-note            TEXT
-updated_by_id   FK → accounts_user (nullable, NULL = system action)
-timestamp       TIMESTAMPTZ   auto_now_add
+_id            ObjectId
+incident       ObjectId (ref: incidents)
+status         String
+note           String
+updatedBy      ObjectId (ref: users)
+timestamp      Date
 ```
 
-**Automatic logic in `Incident.save()`:**
+**Automatic logic in `incidentService`:**
 
-1. Generates `tracking_id` (`INC-` + 8 random uppercase characters) if the record is new.
-2. Routes to the appropriate department based on `incident_type` using a static mapping dict (`DEPT_ROUTING`).
-3. Calculates and sets `deadline` based on `priority` using `timedelta`:
-   - `EMERGENCY` → 2 hours
-   - `HIGH` → 24 hours
-   - `MEDIUM` → 72 hours
-   - `LOW` → 168 hours
-4. For `EMERGENCY` priority, auto-assigns to the first available worker in the matched department.
+1. Generates `trackingId` if missing.
+2. Routes incidents to a department based on `incidentType`.
+3. Calculates `deadline` from `priority`.
+4. Auto-assigns EMERGENCY incidents to an available worker.
 
 ---
 
 ## Real-Time System
 
-The real-time update system is built on Django Channels with Redis as the channel layer backend. It delivers incident status changes to all connected browsers without polling.
+Socket.IO broadcasts incident updates to all connected clients.
 
 ### Components
 
-**`incidents/routing.py`**
-
-Maps the WebSocket path to the consumer, equivalent to `urls.py` for HTTP:
-
-```
-ws://host/ws/incidents/  →  IncidentConsumer
-```
-
-**`incidents/consumers.py` — `IncidentConsumer`**
-
-An `AsyncWebsocketConsumer` that manages browser connections:
-
-- `connect()` — adds the socket to the `incidents_live` channel group and accepts the handshake.
-- `disconnect()` — removes the socket from the group, preventing broadcast to dead connections.
-- `receive()` — intentionally empty. Clients are receive-only. All state-changing operations go through authenticated HTTP POST views.
-- `incident_update()` — called by the channel layer when a message of type `incident.update` is sent to the group. Serialises the payload and pushes it to the browser.
-
-The method name `incident_update` corresponds to the message type `incident.update` — Django Channels replaces dots with underscores when dispatching.
-
-**`incidents/signals.py` — `broadcast_status_update`**
-
-A `post_save` receiver on `StatusUpdate`. Fires only on creation (`if not created: return`). Constructs a JSON-serialisable payload and calls `channel_layer.group_send()` to deliver it to every socket in `incidents_live`.
-
-`async_to_sync` is required because Django signals execute in synchronous context, while `group_send` is a coroutine.
-
-If the channel layer is `None` (Redis unavailable), the broadcast is silently skipped — no exception is raised and the save operation completes normally.
-
-**`static/js/websocket.js` — Browser Client**
-
-- Selects `ws://` or `wss://` based on the page protocol, so the same file works in development and production.
-- On `onmessage`: displays a Bootstrap toast notification and calls `window.onIncidentUpdate(data)` if defined by the current page — each template can define its own handler for DOM updates.
-- Implements exponential backoff on `onclose`: retries at 3 s, 4.5 s, 6.75 s, ... capped at 30 s. This prevents connection storms after a server restart.
+- `server/src/socket/index.js` creates the Socket.IO server and Redis adapter.
+- Controllers emit `incident.update` events after status changes.
+- `client/src/hooks/useSocket.js` listens and updates the UI with toasts.
 
 ### Message Payload
 
 ```json
 {
-  "incident_id": 42,
+  "incident_id": "64f1...",
   "tracking_id": "INC-A3F8B2C1",
   "title": "Broken streetlight on MG Road",
   "status": "IN_PROGRESS",
   "status_display": "In Progress",
-  "note": "Crew dispatched, repair scheduled for tomorrow.",
+  "note": "Crew dispatched",
   "updated_by": "worker_ravi",
   "timestamp": "2026-04-08T14:30:00+05:30"
 }
@@ -367,25 +249,10 @@ If the channel layer is `None` (Redis unavailable), the broadcast is silently sk
 
 ## Background Scheduling
 
-**`incidents/scheduler.py`**
+Escalations run through Bull on a repeatable job:
 
-Uses APScheduler's `BackgroundScheduler`, which runs in a separate daemon thread inside the Django process. The `DjangoJobStore` persists job metadata (last run time, next run time) to the database, making it visible in the Django admin interface.
-
-The `escalate_incidents` job is registered with `replace_existing=True`. On server restart, the existing job record in the database is updated rather than creating a duplicate.
-
-**`incidents/apps.py` — Startup Guard**
-
-The scheduler is started in `IncidentsConfig.ready()`. Without a guard, running any management command (e.g., `migrate`) would also start the scheduler, which attempts to query `django_apscheduler` tables that may not yet exist. The guard inspects `sys.argv` and skips scheduler startup for a defined list of commands.
-
-**`incidents/management/commands/escalate_incidents.py`**
-
-Queries all incidents where `deadline < now` and `status` is not `RESOLVED` or `ESCALATED`. For each:
-
-- Sets `status = ESCALATED` and `priority = EMERGENCY`.
-- Ensures a department is assigned (catches any unrouted `MISC` incidents).
-- Creates a `StatusUpdate` with `updated_by=None` (displayed as "System" in the UI).
-
-Because `StatusUpdate` creation fires the `post_save` signal, the escalation automatically triggers a WebSocket broadcast to all connected browsers — no additional code required.
+- `server/src/jobs/escalationQueue.js` scans overdue incidents.
+- Overdue incidents are escalated and broadcast via Socket.IO.
 
 ---
 
@@ -403,7 +270,7 @@ Because `StatusUpdate` creation fires the `post_save` signal, the escalation aut
 | Access worker panel | No | Yes | No |
 | View analytics | No | Yes | Yes |
 
-Access control is enforced in views using the `is_citizen()`, `is_admin_user()`, and `is_worker()` methods on the user model. Views redirect unauthorized users rather than returning 403 responses for most page views. The `update_status_api` JSON endpoint returns an explicit `403` for citizens.
+Access control is enforced in Express middleware and route guards. The UI also hides routes based on user role.
 
 ---
 
@@ -425,46 +292,44 @@ Access control is enforced in views using the `is_citizen()`, `is_admin_user()`,
           │
           ├──────────────────────────────┐
           │                              │
-          │  Worker marks complete       │  Deadline exceeded (scheduler)
+          │  Worker marks complete       │  Deadline exceeded (queue)
           ▼                              ▼
      [RESOLVED]                    [ESCALATED]
-      resolved_at set               priority → EMERGENCY
-                                    WebSocket push to all browsers
 ```
 
-Every transition creates an immutable `StatusUpdate` record, building a full audit trail visible on the incident detail page.
+Every transition creates a `StatusUpdate` entry for audit history.
 
 ---
 
 ## API Endpoints
 
-### HTTP
+Base URL: `/api`
 
-| Method | URL | Auth | Description |
-|---|---|---|---|
-| GET | `/` | None | Public dashboard |
-| GET | `/admin-panel/` | Admin | All incidents with filters |
-| GET | `/worker-panel/` | Worker | Assigned incidents |
-| GET | `/analytics/` | Admin / Worker | Chart data views |
-| GET / POST | `/report/` | Citizen | Submit new incident |
-| GET / POST | `/incidents/<id>/` | Any | Incident detail + status update form |
-| GET | `/my-incidents/` | Citizen | Incidents reported by current user |
-| GET | `/api/incidents/` | None | Filtered JSON list of incidents |
-| POST | `/api/incidents/<id>/status/` | Admin / Worker | Update incident status (JSON) |
-| GET / POST | `/register/` | None | User registration |
-| GET / POST | `/login/` | None | User login |
-| POST | `/logout/` | Authenticated | User logout |
-| GET / POST | `/profile/` | Authenticated | Edit profile |
+### Auth
 
-### WebSocket
+| Method | URL | Description |
+|---|---|---|
+| POST | `/auth/register` | Register user |
+| POST | `/auth/login` | Login and return JWT |
+| POST | `/auth/logout` | Logout (client-side token removal) |
 
-| URL | Description |
+### Incidents
+
+| Method | URL | Description |
 |---|---|
-| `wss://host/ws/incidents/` | Subscribe to live incident status updates |
+| GET | `/incidents` | List incidents with filters |
+| POST | `/incidents` | Create incident |
+| GET | `/incidents/:id` | Incident detail |
+| POST | `/incidents/:id/status` | Update status |
 
-The WebSocket endpoint is receive-only from the client side. All messages flow server-to-client.
+### Analytics / Departments
 
-### `GET /api/incidents/` Query Parameters
+| Method | URL | Description |
+|---|---|
+| GET | `/analytics` | Dashboard analytics data |
+| GET | `/departments` | List departments |
+
+### `GET /incidents` Query Parameters
 
 | Parameter | Values | Description |
 |---|---|---|
@@ -472,106 +337,74 @@ The WebSocket endpoint is receive-only from the client side. All messages flow s
 | `type` | `POTHOLE`, `GARBAGE`, `STREETLIGHT`, `WATER_LEAK`, `TRAFFIC`, `MISC` | Filter by incident type |
 | `area` | string | Case-insensitive substring match on area field |
 | `q` | string | Search across title, tracking ID, and area |
-
-Results are sorted by priority rank (EMERGENCY first), then deadline ascending, then creation date descending. Priority ranking uses a Django `Case/When` annotation to assign numeric sort weights at the database level.
+| `mine` | `true` | Only incidents reported by the current user |
+| `assigned` | `true` | Only incidents assigned to the current user |
+| `scope` | `all` | Admin: return all incidents |
 
 ---
 
 ## Deployment
 
-The application is deployed on **Render** using the ASGI server Daphne (included via `channels[daphne]`). Daphne handles both HTTP and WebSocket connections on the same port.
-
-**Build command (runs before each deploy):**
-```bash
-pip install -r requirements.txt && python manage.py collectstatic --noinput && python manage.py migrate
-```
-
-**Start command:**
-```bash
-daphne smartcity.asgi:application --bind 0.0.0.0 --port $PORT
-```
-
-**Database:** Supabase-hosted PostgreSQL. The connection string uses the Supabase connection pooler endpoint (`pooler.supabase.com`) with `sslmode=require`.
-
-**Static files:** `collectstatic` copies all static files into `staticfiles/`. WhiteNoiseMiddleware serves them directly from Django with `Cache-Control` headers and Brotli/gzip compression. No separate CDN or web server is required.
-
-**Media files:** Incident photos are stored in `media/incidents/` on the server's local filesystem. On Render's free tier, the filesystem is ephemeral — uploaded images are lost on redeploy. For persistent media storage, an object storage service (S3 or equivalent) should be configured via `django-storages`.
-
-**Security headers active in production (`DEBUG=False`):**
-- `CSRF_COOKIE_SECURE = True`
-- `SESSION_COOKIE_SECURE = True`
-- `SECURE_PROXY_SSL_HEADER` — detects HTTPS from the Render proxy's `X-Forwarded-Proto` header
-- `SECURE_REFERRER_POLICY = 'no-referrer-when-downgrade'`
+- **Client:** static React build served by Render.
+- **Server:** Node.js API with Socket.IO.
+- **Database:** MongoDB Atlas.
+- **Redis:** required for Socket.IO adapter and Bull queue.
 
 ---
 
 ## Local Development Setup
 
-**Prerequisites:** Python 3.10+, PostgreSQL, Redis (optional)
+**Prerequisites:** Node.js 18+, MongoDB Atlas connection string, Redis.
 
 ```bash
 git clone <repository-url>
-cd SmartCityGit
-
-python -m venv venv
-source venv/bin/activate          # Windows: venv\Scripts\activate
-
-pip install -r requirements.txt
-
-cp .env.example .env              # fill in your local values
+cd SmartCityConvert
 ```
 
 ```bash
-python manage.py migrate
-python manage.py setup_departments
-python manage.py createsuperuser
-
-python manage.py runserver
+cd server
+npm install
+cp .env.example .env
+npm run dev
 ```
 
-If Redis is not running locally, the application falls back to `InMemoryChannelLayer`. WebSocket broadcasts work within a single process in this mode — sufficient for development.
-
-To test WebSocket behaviour with Redis:
 ```bash
-redis-server                       # in a separate terminal
-python manage.py runserver
+cd client
+npm install
+npm start
 ```
 
 ---
 
 ## Environment Variables
 
+### `server/.env`
+
 | Variable | Required | Description |
 |---|---|---|
-| `SECRET_KEY` | Yes | Django secret key. Must be long, random, and kept private. |
-| `DEBUG` | Yes | `True` for development, `False` for production. |
-| `ALLOWED_HOSTS` | Yes | Comma-separated list of valid hostnames. |
-| `CSRF_TRUSTED_ORIGINS` | Yes | Comma-separated list of trusted origins for CSRF (include `https://`). |
-| `DB_NAME` | Yes | PostgreSQL database name. |
-| `DB_USER` | Yes | PostgreSQL user. |
-| `DB_PASSWORD` | Yes | PostgreSQL password. |
-| `DB_HOST` | Yes | PostgreSQL host. |
-| `DB_PORT` | No | PostgreSQL port. Default: `5432`. |
-| `REDIS_URL` | No | Redis connection URL. Default: `redis://127.0.0.1:6379`. Falls back to in-memory layer if unavailable. |
+| `PORT` | Yes | API port (default 5000) |
+| `MONGO_URI` | Yes | MongoDB connection string |
+| `JWT_SECRET` | Yes | JWT signing key |
+| `JWT_EXPIRES_IN` | No | Token TTL (e.g. `7d`) |
+| `CLIENT_ORIGIN` | Yes | React app origin (CORS) |
+| `REDIS_URL` | Yes | Redis connection string |
+
+### `client/.env`
+
+| Variable | Required | Description |
+|---|---|---|
+| `REACT_APP_API_URL` | No | API base URL (defaults to `http://localhost:5000/api`) |
 
 ---
 
-## Database Migrations
+## Data Seeding and Migration
 
-Migrations are version-controlled and applied in order.
+- `server/src/scripts/seedDepartments.js` seeds default departments.
+- `server/src/scripts/migratePostgres.js` migrates legacy Postgres data into MongoDB.
 
-| App | Migration | Change |
-|---|---|---|
-| `accounts` | `0001_initial` | Creates the custom `User` table with `role` and `phone` fields |
-| `accounts` | `0002_initial` | Adds `department` ForeignKey from `User` to `Department` |
-| `incidents` | `0001_initial` | Creates `Department`, `Incident`, and `StatusUpdate` tables |
-| `incidents` | `0002_add_misc_incident_type` | Adds `MISC` as a sixth incident type for unclassified reports |
-| `incidents` | `0003_remove_closed_status` | Removes the `CLOSED` status choice, standardising on `RESOLVED` and `ESCALATED` |
+Run scripts from the `server/` directory with Node:
 
-On a fresh database, run:
 ```bash
-python manage.py migrate
-python manage.py setup_departments
+node src/scripts/seedDepartments.js
+node src/scripts/migratePostgres.js
 ```
-
-`setup_departments` uses `update_or_create` — it is safe to run multiple times and will not create duplicate department records.
