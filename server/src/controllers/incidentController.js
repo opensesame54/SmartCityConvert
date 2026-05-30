@@ -8,6 +8,7 @@ const {
   routeDepartmentCode,
 } = require("../services/incidentService");
 const { getIo } = require("../socket");
+const { cloudinary } = require("../config/cloudinary");
 
 const STATUS_LABELS = {
   SUBMITTED: "Submitted",
@@ -100,6 +101,17 @@ const formatStatusUpdate = (update) => ({
   timestamp: update.timestamp,
 });
 
+const uploadIncidentImage = async (file) => {
+  if (!file) return null;
+  const base64 = file.buffer.toString("base64");
+  const dataUri = `data:${file.mimetype};base64,${base64}`;
+  const result = await cloudinary.uploader.upload(dataUri, {
+    folder: "smartcity/incidents",
+    resource_type: "image",
+  });
+  return result?.secure_url || result?.url || null;
+};
+
 const listIncidents = async (req, res) => {
   const { status, type, area, q, mine, assigned, scope } = req.query;
   const filter = {};
@@ -176,7 +188,17 @@ const createIncident = async (req, res) => {
   const lat = latitude !== undefined ? Number(latitude) : undefined;
   const lng = longitude !== undefined ? Number(longitude) : undefined;
 
-  const imageUrl = req.file ? `/uploads/${req.file.filename}` : null;
+  let imageUrl = null;
+  if (req.file) {
+    try {
+      imageUrl = await uploadIncidentImage(req.file);
+    } catch (error) {
+      console.error("Cloudinary upload error:", error);
+      // include the error message for easier debugging in development
+      const msg = (error && error.message) || "Image upload failed";
+      return res.status(400).json({ error: "Image upload failed", details: msg });
+    }
+  }
 
   const incident = await Incident.create({
     trackingId,

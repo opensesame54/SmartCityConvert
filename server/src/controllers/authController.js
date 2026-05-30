@@ -1,6 +1,27 @@
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const { OAuth2Client } = require("google-auth-library");
 const User = require("../models/User");
+
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+
+const fetchGoogleProfile = async (idToken) => {
+  const ticket = await googleClient.verifyIdToken({
+    idToken,
+    audience: process.env.GOOGLE_CLIENT_ID,
+  });
+
+  const payload = ticket.getPayload();
+  if (!payload || !payload.email) {
+    throw new Error("Unable to verify Google token");
+  }
+
+  if (!payload.email_verified) {
+    throw new Error("Google email is not verified");
+  }
+
+  return payload;
+};
 
 const issueAccessToken = (user) => {
   return jwt.sign(
@@ -120,9 +141,57 @@ const logout = async (req, res) => {
   return res.json({ status: "ok" });
 };
 
+const googleLogin = async (req, res) => {
+  const { idToken } = req.body;
+
+  if (!process.env.GOOGLE_CLIENT_ID) {
+    return res.status(500).json({ error: "Google OAuth is not configured" });
+  }
+
+  if (!idToken) {
+    return res.status(400).json({ error: "Missing Google ID token" });
+  }
+
+  try {
+    const googleProfile = await fetchGoogleProfile(idToken);
+    const email = googleProfile.email.toLowerCase();
+    let user = await User.findOne({ email });
+
+    if (!user) {
+      const fallbackPasswordHash = await bcrypt.hash(`${email}:${Date.now()}`, 10);
+      const username =
+        googleProfile.name || email.split("@")[0] || `user_${Math.random().toString(36).slice(2, 8)}`;
+
+      user = await User.create({
+        username,
+        email,
+        passwordHash: fallbackPasswordHash,
+        role: "citizen",
+      });
+    }
+
+    const accessToken = issueAccessToken(user);
+    const refreshToken = issueRefreshToken(user);
+    setRefreshCookie(res, refreshToken);
+
+    return res.json({
+      accessToken,
+      user: {
+        id: user._id.toString(),
+        username: user.username,
+        email: user.email,
+        role: user.role,
+      },
+    });
+  } catch (error) {
+    return res.status(401).json({ error: error.message || "Google authentication failed" });
+  }
+};
+
 module.exports = {
   register,
   login,
+  googleLogin,
   refresh,
   logout,
 };
